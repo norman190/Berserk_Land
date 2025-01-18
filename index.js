@@ -9,7 +9,7 @@ const { monsterslain, deleteUser, reportUser } = require('./Functions/OtherFunct
 const { viewLeaderboard, viewUserByAdmin } = require('./Functions/ViewFunction'); // Import the view functions
 
 const app = express();
-const port = process.env.port || 3001;
+const port = process.env.port || 8080;
 
 
 // Hardcoded MongoDB URI and JWT secret
