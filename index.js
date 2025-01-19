@@ -44,6 +44,19 @@ app.get('/', (req, res) => {
     res.send('Welcome to the API');
 });
 
+const validatePassword = (password) => {
+    const passwordRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*(),.?":{}|<>])[A-Za-z\d!@#$%^&*(),.?":{}|<>]{8,}$/;
+
+    if (passwordRegex.test(password)) {
+        return { valid: true, message: "Password is secure." };
+    } else {
+        return {
+            valid: false,
+            message: "Password must have at least 8 characters, including 1 uppercase letter, 1 number, and 1 special character."
+        };
+    }
+};
+
 app.post('/createUser', async (req, res) => {
     try {
         const { user_id, username, password, email, role = "user" } = req.body; // Default role is "user"
@@ -55,6 +68,12 @@ app.post('/createUser', async (req, res) => {
             return res.status(400).send("Missing required fields: user_id, username, password, or email");
         }
 
+        // Validate password strength
+        const passwordValidation = validatePassword(password);
+        if (!passwordValidation.valid) {
+            return res.status(400).send(passwordValidation.message);
+        }
+
         // Check for duplicate user_id or username
         const existingUser = await collection.findOne({
             $or: [{ user_id }, { username }]
@@ -64,10 +83,14 @@ app.post('/createUser', async (req, res) => {
             return res.status(409).send("User with the same user_id or username already exists");
         }
 
+        // Hash the password for security (optional but recommended)
+        const bcrypt = require('bcrypt');
+        const hashedPassword = await bcrypt.hash(password, 10);
+
         const user = {
             user_id,
             username,
-            password,
+            password: hashedPassword, // Store hashed password
             email,
             role, // Save the role in the user document
             registration_date: new Date().toISOString(),
@@ -82,7 +105,7 @@ app.post('/createUser', async (req, res) => {
             },
             inventory: []
         };
-        
+
         // Insert the user into the database
         await collection.insertOne(user);
         res.status(201).send("User created successfully");
