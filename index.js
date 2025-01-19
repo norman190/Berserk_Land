@@ -623,15 +623,16 @@ app.delete('/deleteUser/:user_id', verifyAdmin, async (req, res) => {
         const result = await collection.deleteOne({ user_id });
 
         if (result.deletedCount === 1) {
-            res.status(200).send("User deleted successfully");
+            return res.status(200).send("User deleted successfully");
         } else {
-            res.status(500).send("Error deleting user");
+            return res.status(500).send("Error deleting user");
         }
     } catch (error) {
         console.error("Error in deleteUser route:", error);
         res.status(500).send("Error deleting user");
     }
 });
+
 
 
 // Report user route
