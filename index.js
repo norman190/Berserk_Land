@@ -2,7 +2,7 @@ const express = require('express');
 const { MongoClient, ServerApiVersion } = require('mongodb');
 const jwt = require('jsonwebtoken');
 const JWT_SECRET = "020601"; 
-
+const { createUser, createItem, createMonster, createTransaction, createWeapon } = require('./Functions/CreateFunction');
 const { existingUser, existingItem, existingMonster, existingWeapon } = require('./Functions/ExistingFunction'); // Import the existing functions
 const { findUserByUsername, findUserById } = require('./Functions/FindFunction'); // Import the find functions
 const { monsterslain, deleteUser, reportUser } = require('./Functions/OtherFunction'); // Import the other functions 
@@ -46,7 +46,7 @@ app.get('/', (req, res) => {
 
 app.post('/createUser', async (req, res) => {
     try {
-        const { user_id, username, password, email } = req.body;
+        const { user_id, username, password, email, role = "user" } = req.body; // Default role is "user"
         const database = client.db('Cluster');
         const collection = database.collection('users');
 
@@ -69,6 +69,7 @@ app.post('/createUser', async (req, res) => {
             username,
             password,
             email,
+            role, // Save the role in the user document
             registration_date: new Date().toISOString(),
             profile: {
                 level: 1,
@@ -91,6 +92,7 @@ app.post('/createUser', async (req, res) => {
     }
 });
 
+
 app.post('/login', async (req, res) => {
     try {
         const { username, password } = req.body;
@@ -98,33 +100,71 @@ app.post('/login', async (req, res) => {
         if (!username || !password) {
             return res.status(400).send("Missing required fields: username or password");
         }
-
-        // Access the users collection
+        
         const database = client.db('Cluster');
         const collection = database.collection('users');
 
-        // Find the user by username
+        // Find user by username
         const user = await collection.findOne({ username });
 
         if (!user) {
             return res.status(404).send("User not found");
         }
 
-        // Check if the password matches (you should hash passwords in a real application)
+        // Verify the password
         if (user.password !== password) {
             return res.status(401).send("Invalid password");
         }
 
-        // Generate a JWT token
-        const token = jwt.sign({ user_id: user.user_id, username: user.username }, JWT_SECRET, { expiresIn: '1h' });
+        // Identify user role (admin or user)
+        const role = user.role || "user";  // Default to "user" if role is not set
 
-        // Respond with the token
-        res.status(200).json({ message: "Login successful", token });
+        // Include the role in the token
+        const token = jwt.sign(
+            { user_id: user.user_id, username: user.username, role: role },
+            JWT_SECRET,
+            { expiresIn: '1h' }
+        );
+
+        // Send response with role information
+        res.status(200).json({
+            message: "Login successful",
+            token,
+            role  // Include role in the response
+        });
     } catch (error) {
         console.error("Error in login route:", error);
         res.status(500).send("Error logging in");
     }
 });
+
+
+// Middleware to verify token and check for admin role
+const verifyAdmin = (req, res, next) => {
+    const token = req.headers['authorization']?.split(' ')[1]; // Extract token from Authorization header
+
+    if (!token) {
+        return res.status(401).json({ message: "No token provided" });
+    }
+
+    try {
+        // Verify the JWT token
+        const decoded = jwt.verify(token, '020601'); // Use the same secretKey you used to sign the JWT
+
+        // Check if the user has the admin role
+        if (decoded.role !== 'admin') {
+            return res.status(403).json({ message: "Access denied: Admins only" });
+        }
+
+        // If admin, allow the request to continue
+        req.user = decoded; // Optionally attach the decoded token to the request
+        next(); // Continue to the next middleware or route handler
+    } catch (error) {
+        return res.status(401).json({ message: "Invalid token" });
+    }
+};
+
+
 
 // Middleware to verify the token
 const verifyToken = (req, res, next) => {
@@ -144,13 +184,24 @@ const verifyToken = (req, res, next) => {
     });
 };
 
+const checkRole = (role) => {
+    return (req, res, next) => {
+        const userRole = req.user?.role; // Assuming role is part of the decoded token payload
+        if (userRole === role) {
+            return next();
+        }
+        return res.status(403).send("Forbidden: You do not have the required role.");
+    };
+};
+
+
 // Example protected route
 app.get('/protectedRoute', verifyToken, (req, res) => {
     res.status(200).send(`Hello ${req.user.username}, this is a protected route.`);
 });
 
 
-app.post('/createItem', async (req, res) => {
+app.post('/createItem', verifyAdmin, async (req, res) => {
     try {
         const { item_id, name, description, type, attributes, rarity } = req.body;
         const database = client.db('Cluster');
@@ -179,7 +230,8 @@ app.post('/createItem', async (req, res) => {
     }
 });
 
-app.post('/createMonster', async (req, res) => {
+
+app.post('/createMonster', verifyAdmin, async (req, res) => {
     try {
         const { monster_id, name, attributes, location } = req.body;
         const database = client.db('Cluster');
@@ -237,7 +289,7 @@ app.post('/createTransaction', async (req, res) => {
     }
 });
 
-app.post('/createWeapon', async (req, res) => {
+app.post('/createWeapon', verifyAdmin, async (req, res) => {
     try {
         const { weapon_id, name, description, damage, type, attributes } = req.body;
         const database = client.db('Cluster');
@@ -432,7 +484,7 @@ app.post('/monsterslain', async (req, res) => {
 });
 
 // Delete user route
-app.delete('/deleteUser/:user_id', async (req, res) => {
+app.delete('/deleteUser/:user_id', verifyAdmin, async (req, res) => {
     try {
         const { user_id } = req.params;
 
@@ -515,22 +567,24 @@ app.get('/leaderboard', async (req, res) => {
 });
 
 // View User by Admin Route
-app.get('/viewUserByAdmin/:user_id', async (req, res) => {
+app.get('/viewUserByAdmin/:user_id', verifyAdmin, async (req, res) => {
     try {
-        const { user_id } = req.params; // Extract user_id from the URL
+        const { user_id } = req.params;
 
-        const user = await viewUserByAdmin(client, user_id); // Call your function to get the user
+        const user = await viewUserByAdmin(client, user_id);
 
         if (!user) {
             return res.status(404).send(`User with ID ${user_id} not found.`);
         }
 
-        res.status(200).json(user); // Send the user data as JSON
+        res.status(200).json(user);
     } catch (error) {
         console.error("Error in viewUserByAdmin route:", error);
         res.status(500).send("Error fetching user by admin.");
     }
 });
+
+
 
 // Connect to MongoDB and start the server
 connectToDatabase().then(() => {
