@@ -33,7 +33,7 @@ const {
 const { viewLeaderboard, viewUserByAdmin } = require('./Functions/ViewFunction');
 
 const app = express();
-const port = process.env.port || process.env.port;
+const port = process.env.port || process.env.norman_port;
 
 const credentials = process.env.credentials;
 
