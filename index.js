@@ -1,51 +1,67 @@
 const express = require('express');
 const { MongoClient, ServerApiVersion } = require('mongodb');
 const jwt = require('jsonwebtoken');
-const JWT_SECRET = "020601"; 
-const { createUser, createItem, createMonster, createTransaction, createWeapon } = require('./Functions/CreateFunction');
-const { existingUser, existingItem, existingMonster, existingWeapon } = require('./Functions/ExistingFunction'); // Import the existing functions
-const { findUserByUsername, findUserById } = require('./Functions/FindFunction'); // Import the find functions
-const { monsterslain, deleteUser, reportUser } = require('./Functions/OtherFunction'); // Import the other functions 
-const { viewLeaderboard, viewUserByAdmin } = require('./Functions/ViewFunction'); // Import the view functions
+const JWT_SECRET = "020601";
+
+const {
+    createUser,
+    createItem,
+    createMonster,
+    createTransaction,
+    createWeapon
+} = require('./Functions/CreateFunction');
+
+const {
+    existingUser,
+    existingItem,
+    existingMonster,
+    existingWeapon
+} = require('./Functions/ExistingFunction');
+
+const {
+    findUserByUsername,
+    findUserById
+} = require('./Functions/FindFunction');
+
+const {
+    monsterslain,
+    deleteUser,
+    reportUser
+} = require('./Functions/OtherFunction');
+
+const { viewLeaderboard, viewUserByAdmin } = require('./Functions/ViewFunction');
 
 const app = express();
 const port = process.env.port || 8080;
 
+const credentials = 'X509-cert-3779123189387231429.pem';
 
-// Hardcoded MongoDB URI and JWT secret
-const uri = "mongodb+srv://airel:airel123@cluster.yvryh.mongodb.net/?retryWrites=true&w=majority&appName=Cluster";  // MongoDB connection string
-
-const client = new MongoClient(uri, {
-    serverApi: {
-        version: ServerApiVersion.v1,
-        strict: true,
-        deprecationErrors: true
-    }
+// Correct MongoDB connection initialization
+const client = new MongoClient('mongodb+srv://cluster.yvryh.mongodb.net/?authSource=%24external&authMechanism=MONGODB-X509&retryWrites=true&w=majority&appName=Cluster', {
+    tlsCertificateKeyFile: credentials,
+    serverApi: ServerApiVersion.v1
 });
 
-
-
+// Establish and reuse MongoDB connection
+let db;
 async function connectToDatabase() {
     try {
-        await client.connect();
-        console.log("Connected to MongoDB");
-        return client;
+        if (!db) {
+            await client.connect();
+            db = client.db("Cluster"); // Ensure a single connection to the database
+            console.log("Connected to MongoDB");
+        }
     } catch (error) {
-        console.error("Error connecting to MongoDB:", error);
-        process.exit(1); // Exit if the database connection fails
+        console.error("Failed to connect to MongoDB:", error);
+        throw error;
     }
 }
 
 // Middleware
 app.use(express.json());
 
-// Routes
-app.get('/', (req, res) => {
-    res.send('Welcome to the API');
-});
-
 const validatePassword = (password) => {
-    const passwordRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*(),.?":{}|<>])[A-Za-z\d!@#$%^&*(),.?":{}|<>]{8,}$/;
+    const passwordRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&(),.?":{}|<>])[A-Za-z\d!@#$%^&*(),.?":{}|<>]{8,}$/;
 
     if (passwordRegex.test(password)) {
         return { valid: true, message: "Password is secure." };
@@ -57,6 +73,9 @@ const validatePassword = (password) => {
     }
 };
 
+
+
+// Example: Simplified Routes Using Shared DB Connection
 app.post('/createUser', async (req, res) => {
     try {
         const { user_id, username, password, email, role = "user" } = req.body; // Default role is "user"
@@ -116,6 +135,25 @@ app.post('/createUser', async (req, res) => {
     }
 });
 
+
+// Ensure server starts only after DB connection
+connectToDatabase()
+    .then(() => {
+        app.listen(port, () => {
+            console.log(`Server running on http://localhost:${port}`);
+        });
+    })
+    .catch(err => {
+        console.error("Error starting server:", err);
+        process.exit(1);
+    });
+
+// Handle SIGINT for clean shutdown
+process.on('SIGINT', async () => {
+    console.log('Closing database connection...');
+    await client.close();
+    process.exit(0);
+});
 
 app.post('/login', async (req, res) => {
     try {
@@ -221,7 +259,30 @@ const verifyAdmin = (req, res, next) => {
     }
 };
 
+// Middleware to verify token and check if the role is 'user'
+const verifyUser = (req, res, next) => {
+    const token = req.headers['authorization']?.split(' ')[1]; // Extract token from Authorization header
 
+    if (!token) {
+        return res.status(401).json({ message: "No token provided" });
+    }
+
+    try {
+        // Verify the JWT token
+        const decoded = jwt.verify(token, JWT_SECRET);
+
+        // Check if the user has the role 'user'
+        if (decoded.role !== 'user') {
+            return res.status(403).json({ message: "Access denied: Users only" });
+        }
+
+        // Attach the decoded user data to the request object
+        req.user = decoded;
+        next(); // Continue to the next middleware or route handler
+    } catch (error) {
+        return res.status(401).json({ message: "Invalid token" });
+    }
+};
 
 // Middleware to verify the token
 const verifyToken = (req, res, next) => {
@@ -315,27 +376,32 @@ app.post('/createMonster', verifyAdmin, async (req, res) => {
     }
 });
 
-app.post('/createTransaction', async (req, res) => {
+app.post('/createTransaction', verifyUser, async (req, res) => {
     try {
         const { transaction_id, user_id, item_id, transaction_type, amount, date } = req.body;
+
+        if (req.user.user_id !== user_id) {
+            return res.status(403).json({ message: "You can only create transactions for your own account." });
+        }
+
         const database = client.db('Cluster');
+        const usersCollection = database.collection('users');
+        const itemsCollection = database.collection('items');
+        const transactionsCollection = database.collection('transactions');
 
         // Check if user exists
-        const usersCollection = database.collection('users');
         const userExists = await usersCollection.findOne({ user_id });
         if (!userExists) {
             return res.status(404).send(`User with ID ${user_id} does not exist.`);
         }
 
         // Check if item exists
-        const itemsCollection = database.collection('items');
         const itemExists = await itemsCollection.findOne({ item_id });
         if (!itemExists) {
             return res.status(404).send(`Item with ID ${item_id} does not exist.`);
         }
 
         // Insert the transaction
-        const transactionsCollection = database.collection('transactions');
         const transaction = { transaction_id, user_id, item_id, transaction_type, amount, date };
         await transactionsCollection.insertOne(transaction);
 
@@ -504,15 +570,12 @@ app.get('/findUserById/:user_id', async (req, res) => {
 
 
 // Monsterslain route
-app.post('/monsterslain', async (req, res) => {
+app.post('/monsterslain', verifyUser, async (req, res) => {
     try {
         const { user_id, monster_id } = req.body;
 
-        // Log the incoming request body to inspect the data
-        console.log("Request body:", req.body);
-
-        if (!user_id || !monster_id) {
-            return res.status(400).send("Missing required fields: user_id or monster_id");
+        if (req.user.user_id !== user_id) {
+            return res.status(403).json({ message: "You can only update your own profile." });
         }
 
         const user = await client.db('Cluster').collection('users').findOne({ user_id });
@@ -521,19 +584,13 @@ app.post('/monsterslain', async (req, res) => {
             return res.status(404).send(`User with ID "${user_id}" not found.`);
         }
 
-        console.log("User found:", user);
-
-        // Call monsterslain and check the result
         const updatedProfile = await monsterslain(client, user_id, monster_id);
 
         if (!updatedProfile) {
-            console.log("Failed to update profile for user_id:", user_id);  // Log failure case
             return res.status(500).send("Error updating profile after monster slain.");
         }
 
-        // If updated profile is returned, send success response
-        console.log("Updated profile:", updatedProfile);  // Log the updated profile
-        res.status(200).json(updatedProfile);  // Return updated user profile
+        res.status(200).json(updatedProfile);
     } catch (error) {
         console.error("Error in monsterslain route:", error);
         res.status(500).send(`Error processing monster slain: ${error.message}`);
@@ -574,41 +631,53 @@ app.delete('/deleteUser/:user_id', verifyAdmin, async (req, res) => {
 
 
 // Report user route
-app.get('/reportUser/:user_id', async (req, res) => {
+app.post('/reportUser', verifyUser, async (req, res) => {
     try {
-        const { user_id } = req.params;
+        const { reporter_id, reported_user_id, reason } = req.body;
 
-        if (!user_id) {
-            return res.status(400).send("Missing required field: user_id");
+        if (req.user.user_id !== reporter_id) {
+            return res.status(403).json({ message: "You can only report users as yourself." });
         }
 
-        // Fetch the user details from the database
-        const user = await client.db('Cluster').collection('users').findOne({ user_id });
+        const database = client.db('Cluster');
+        const usersCollection = database.collection('users');
 
-        if (!user) {
-            return res.status(404).send(`User with ID "${user_id}" not found.`);
+        // Check if reported user exists
+        const reportedUser = await usersCollection.findOne({ user_id: reported_user_id });
+        if (!reportedUser) {
+            return res.status(404).send(`Reported user with ID ${reported_user_id} does not exist.`);
         }
 
-        // Generate the enhanced report
-        const report = {
-            report_generated_at: new Date().toISOString(),
-            user_report: {
-                user_id: user.user_id,
-                username: user.username,
-                email: user.email,
-                profile: user.profile,
-                monsters_slain_count: user.monsters_slain ? user.monsters_slain.length : 0, // Safely access monsters slain
-                inventory_count: user.inventory ? user.inventory.length : 0, // Safely access inventory
-                recent_activity: "No suspicious activity detected",  // Placeholder, you can update based on actual data
-                report_status: "Report generated successfully"
-            }
-        };
+        // Insert the report
+        const reportsCollection = database.collection('reports');
+        const report = { reporter_id, reported_user_id, reason, date: new Date() };
+        await reportsCollection.insertOne(report);
 
-        res.status(200).json(report);
-
+        res.status(201).send("Report submitted successfully");
     } catch (error) {
         console.error("Error in reportUser route:", error);
-        res.status(500).send("Error generating user report");
+        res.status(500).send("Error submitting report");
+    }
+});
+
+// All Find Functions (Users only)
+app.get('/findUserByUsername/:username', verifyUser, async (req, res) => {
+    try {
+        const { username } = req.params;
+
+        const database = client.db('Cluster');
+        const collection = database.collection('users');
+
+        const user = await collection.findOne({ username: { $regex: new RegExp(username, 'i') } });
+
+        if (user) {
+            res.status(200).json(user);
+        } else {
+            res.status(404).send(`User with username "${username}" not found.`);
+        }
+    } catch (error) {
+        console.error("Error finding user by username:", error);
+        res.status(500).send("Error finding user by username");
     }
 });
 
@@ -641,15 +710,3 @@ app.get('/viewUserByAdmin/:user_id', verifyAdmin, async (req, res) => {
     }
 });
 
-
-
-// Connect to MongoDB and start the server
-connectToDatabase().then(() => {
-    app.listen(port, () => {
-        console.log(`Server running on http://localhost:${port}`);
-    });
-}).catch(err => {
-    console.error("Failed to connect to database:", err);
-    process.exit(1);
-});
-///ssaadadada
