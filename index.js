@@ -84,8 +84,9 @@ app.post('/createUser', async (req, res) => {
         }
 
         // Hash the password for security (optional but recommended)
-        const bcrypt = require('bcrypt');
+        const bcrypt = require('bcryptjs');
         const hashedPassword = await bcrypt.hash(password, 10);
+        const isMatch = await bcrypt.compare(password, hashedPassword); //verify if the password is correct
 
         const user = {
             user_id,
