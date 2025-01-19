@@ -1,7 +1,8 @@
 const express = require('express');
 const { MongoClient, ServerApiVersion } = require('mongodb');
 const jwt = require('jsonwebtoken');
-const JWT_SECRET = "020601";
+const dotenv = require('dotenv');
+dotenv.config();
 
 const {
     createUser,
@@ -32,12 +33,12 @@ const {
 const { viewLeaderboard, viewUserByAdmin } = require('./Functions/ViewFunction');
 
 const app = express();
-const port = process.env.port || 8080;
+const port = process.env.port || process.env.port;
 
-const credentials = 'X509-cert-3779123189387231429.pem';
+const credentials = process.env.credentials;
 
 // Correct MongoDB connection initialization
-const client = new MongoClient('mongodb+srv://cluster.yvryh.mongodb.net/?authSource=%24external&authMechanism=MONGODB-X509&retryWrites=true&w=majority&appName=Cluster', {
+const client = new MongoClient(process.env.MONGODB_URI, {
     tlsCertificateKeyFile: credentials,
     serverApi: ServerApiVersion.v1
 });
@@ -214,10 +215,16 @@ app.post('/login', async (req, res) => {
         // Identify user role (admin or user)
         const role = user.role || "user"; // Default to "user" if role is not set
 
+
+        const JWT_SECRET = process.env.JWT_SECRET;
+        if (!JWT_SECRET) {
+            throw new Error("JWT_SECRET is not defined in environment variables.");
+        }
+
         // Generate token
         const token = jwt.sign(
             { user_id: user.user_id, username: user.username, role },
-            JWT_SECRET,
+            JWT_SECRET, // Use the environment variable
             { expiresIn: '1h' }
         );
 
@@ -244,7 +251,7 @@ const verifyAdmin = (req, res, next) => {
 
     try {
         // Verify the JWT token
-        const decoded = jwt.verify(token, '020601'); // Use the same secretKey you used to sign the JWT
+        const decoded = jwt.verify(token, process.env.JWT_SECRET); // Use the same secretKey you used to sign the JWT
 
         // Check if the user has the admin role
         if (decoded.role !== 'admin') {
@@ -261,28 +268,25 @@ const verifyAdmin = (req, res, next) => {
 
 // Middleware to verify token and check if the role is 'user'
 const verifyUser = (req, res, next) => {
-    const token = req.headers['authorization']?.split(' ')[1]; // Extract token from Authorization header
-
+    const token = req.headers['authorization']?.split(' ')[1]; // Extract token
     if (!token) {
         return res.status(401).json({ message: "No token provided" });
     }
 
     try {
-        // Verify the JWT token
-        const decoded = jwt.verify(token, JWT_SECRET);
-
-        // Check if the user has the role 'user'
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
         if (decoded.role !== 'user') {
             return res.status(403).json({ message: "Access denied: Users only" });
         }
 
-        // Attach the decoded user data to the request object
-        req.user = decoded;
-        next(); // Continue to the next middleware or route handler
+        req.user = decoded; // Attach user details to request
+        next();
     } catch (error) {
+        console.error("Error in verifyUser middleware:", error);
         return res.status(401).json({ message: "Invalid token" });
     }
 };
+
 
 // Middleware to verify the token
 const verifyToken = (req, res, next) => {
@@ -292,7 +296,7 @@ const verifyToken = (req, res, next) => {
         return res.status(403).send("Token is required");
     }
 
-    jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
         if (err) {
             return res.status(401).send("Invalid or expired token");
         }
