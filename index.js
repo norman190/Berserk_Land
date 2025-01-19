@@ -597,9 +597,9 @@ app.get('/reportUser/:user_id', async (req, res) => {
                 username: user.username,
                 email: user.email,
                 profile: user.profile,
-                monsters_slain_count: user.monsters_slain.length,
-                inventory_count: user.inventory.length,
-                recent_activity: "No suspicious activity detected",  // This can be enhanced with real data
+                monsters_slain_count: user.monsters_slain ? user.monsters_slain.length : 0, // Safely access monsters slain
+                inventory_count: user.inventory ? user.inventory.length : 0, // Safely access inventory
+                recent_activity: "No suspicious activity detected",  // Placeholder, you can update based on actual data
                 report_status: "Report generated successfully"
             }
         };
