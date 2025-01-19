@@ -124,7 +124,7 @@ app.post('/login', async (req, res) => {
         if (!username || !password) {
             return res.status(400).send("Missing required fields: username or password");
         }
-        
+
         const database = client.db('Cluster');
         const collection = database.collection('users');
 
@@ -135,32 +135,65 @@ app.post('/login', async (req, res) => {
             return res.status(404).send("User not found");
         }
 
+        // Check if the account is locked
+        const currentTime = new Date();
+        if (user.lockUntil && currentTime < user.lockUntil) {
+            return res.status(403).send("Account is locked. Try again later.");
+        }
+
         // Verify the password
-        if (user.password !== password) {
+        const bcrypt = require('bcryptjs');
+        const isPasswordValid = await bcrypt.compare(password, user.password);
+
+        if (!isPasswordValid) {
+            // Increment failed attempts
+            const failedAttempts = (user.failedAttempts || 0) + 1;
+
+            if (failedAttempts >= 3) {
+                // Lock the account for 1 minute
+                await collection.updateOne(
+                    { username },
+                    { $set: { lockUntil: new Date(currentTime.getTime() + 1 * 60 * 1000), failedAttempts: 0 } }
+                );
+                return res.status(403).send("Account is locked due to multiple failed login attempts. Try again in 1 minute.");
+            }
+
+            // Update failed attempts
+            await collection.updateOne(
+                { username },
+                { $set: { failedAttempts } }
+            );
+
             return res.status(401).send("Invalid password");
         }
 
-        // Identify user role (admin or user)
-        const role = user.role || "user";  // Default to "user" if role is not set
+        // Reset failed attempts on successful login
+        await collection.updateOne(
+            { username },
+            { $set: { failedAttempts: 0, lockUntil: null } }
+        );
 
-        // Include the role in the token
+        // Identify user role (admin or user)
+        const role = user.role || "user"; // Default to "user" if role is not set
+
+        // Generate token
         const token = jwt.sign(
-            { user_id: user.user_id, username: user.username, role: role },
+            { user_id: user.user_id, username: user.username, role },
             JWT_SECRET,
             { expiresIn: '1h' }
         );
 
-        // Send response with role information
         res.status(200).json({
             message: "Login successful",
             token,
-            role  // Include role in the response
+            role // Include role in the response
         });
     } catch (error) {
         console.error("Error in login route:", error);
         res.status(500).send("Error logging in");
     }
 });
+
 
 
 // Middleware to verify token and check for admin role
