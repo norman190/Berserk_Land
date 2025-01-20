@@ -1,76 +1,41 @@
 const express = require('express');
 const { MongoClient, ServerApiVersion } = require('mongodb');
 const jwt = require('jsonwebtoken');
-const axios = require('axios');
 const dotenv = require('dotenv');
-const bcrypt = require('bcryptjs');
-const nodemailer = require('nodemailer');
-const crypto = require('crypto');
 dotenv.config();
 
-const app = express();
-const port = process.env.PORT || process.env.NORMAN_PORT;
+const {
+    createUser,
+    createItem,
+    createMonster,
+    createTransaction,
+    createWeapon
+} = require('./Functions/CreateFunction');
 
+
+const {
+    findUserByUsername,
+    findUserById
+} = require('./Functions/FindFunction');
+
+const {
+    monsterslain,
+    deleteUser,
+    reportUser
+} = require('./Functions/OtherFunction');
+
+const { viewLeaderboard, viewUserByAdmin } = require('./Functions/ViewFunction');
+
+const app = express();
+const port = process.env.port || process.env.norman_port;
+
+const credentials = process.env.credentials;
+
+// Correct MongoDB connection initialization
 const client = new MongoClient(process.env.MONGODB_URI, {
-    tlsCertificateKeyFile: process.env.CREDENTIALS,
+    tlsCertificateKeyFile: credentials,
     serverApi: ServerApiVersion.v1
 });
-
-// Create transporter for nodemailer
-function createTransporter() {
-    const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS } = process.env;
-
-    if (!SMTP_HOST || !SMTP_PORT || !SMTP_USER || !SMTP_PASS) {
-        throw new Error('Missing SMTP configuration. Check your .env file.');
-    }
-
-    return nodemailer.createTransport({
-        host: SMTP_HOST,
-        port: parseInt(SMTP_PORT, 10),
-        secure: false, // Use true for SSL (port 465) or false for TLS (port 587)
-        auth: {
-            user: SMTP_USER,
-            pass: SMTP_PASS,
-        },
-    });
-}
-
-// Send verification email
-async function sendVerificationEmail(to, username, verificationToken) {
-    try {
-        const transporter = createTransporter();
-        const mailOptions = {
-            from: `"Your App Name" <${process.env.SMTP_USER}>`,
-            to,
-            subject: 'Verify Your Email',
-            html: `
-                <h1>Welcome, ${username}!</h1>
-                <p>Please verify your email by clicking the link below:</p>
-                <a href="http://localhost:8080/verify?token=${verificationToken}">Verify Email</a>
-            `,
-        };
-
-        await transporter.sendMail(mailOptions);
-        console.log('Verification email sent to:', to);
-    } catch (error) {
-        console.error('Error sending verification email:', error);
-        throw new Error('Failed to send verification email');
-    }
-}
-
-// Validate email using Mailboxlayer API
-async function validateEmail(email) {
-    const apiKey = process.env.MAILBOXLAYER_API_KEY;
-    const url = `http://apilayer.net/api/check?access_key=${apiKey}&email=${email}&smtp=1&format=1`;
-
-    try {
-        const response = await axios.get(url);
-        return response.data;
-    } catch (error) {
-        console.error('Error calling Mailboxlayer API:', error.message);
-        throw new Error('Unable to validate email address.');
-    }
-}
 
 // Establish and reuse MongoDB connection
 let db;
@@ -78,11 +43,11 @@ async function connectToDatabase() {
     try {
         if (!db) {
             await client.connect();
-            db = client.db('Cluster');
-            console.log('Connected to MongoDB');
+            db = client.db("Cluster"); // Ensure a single connection to the database
+            console.log("Connected to MongoDB");
         }
     } catch (error) {
-        console.error('Failed to connect to MongoDB:', error);
+        console.error("Failed to connect to MongoDB:", error);
         throw error;
     }
 }
@@ -90,113 +55,80 @@ async function connectToDatabase() {
 // Middleware
 app.use(express.json());
 
-// Validate password strength
-function validatePassword(password) {
+const validatePassword = (password) => {
     const passwordRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&(),.?":{}|<>])[A-Za-z\d!@#$%^&*(),.?":{}|<>]{8,}$/;
-    return passwordRegex.test(password)
-        ? { valid: true, message: 'Password is secure.' }
-        : {
-              valid: false,
-              message: 'Password must have at least 8 characters, including 1 uppercase letter, 1 number, and 1 special character.',
-          };
-}
 
-async function testEmail() {
-    try {
-        const transporter = nodemailer.createTransport({
-            host: process.env.SMTP_HOST,
-            port: parseInt(process.env.SMTP_PORT, 10),
-            secure: false,
-            auth: {
-                user: process.env.SMTP_USER,
-                pass: process.env.SMTP_PASS,
-            },
-        });
-
-        const mailOptions = {
-            from: `"Test" <${process.env.SMTP_USER}>`,
-            to: 'test@example.com', // Change to a valid recipient email
-            subject: 'SMTP Test',
-            text: 'Hello, this is a test email!',
+    if (passwordRegex.test(password)) {
+        return { valid: true, message: "Password is secure." };
+    } else {
+        return {
+            valid: false,
+            message: "Password must have at least 8 characters, including 1 uppercase letter, 1 number, and 1 special character."
         };
-
-        const info = await transporter.sendMail(mailOptions);
-        console.log('Test email sent:', info.response);
-    } catch (error) {
-        console.error('Error sending test email:', error);
     }
-}
+};
 
-testEmail();
 
-// User creation route
+
+// Example: Simplified Routes Using Shared DB Connection
 app.post('/createUser', async (req, res) => {
     try {
-        const { user_id, username, password, email, role = 'user' } = req.body;
+        const { user_id, username, password, email, role = "user" } = req.body; // Default role is "user"
+        const database = client.db('Cluster');
+        const collection = database.collection('users');
 
+        // Basic validation
         if (!user_id || !username || !password || !email) {
-            return res.status(400).json({ error: 'Missing required fields: user_id, username, password, or email' });
+            return res.status(400).send("Missing required fields: user_id, username, password, or email");
         }
 
-        // Validate email using Mailboxlayer API
-        let emailValidation;
-        try {
-            emailValidation = await validateEmail(email);
-        } catch (error) {
-            console.error('Error validating email:', error.message);
-            return res.status(500).json({ error: 'Failed to validate email address.' });
+        // Validate password strength
+        const passwordValidation = validatePassword(password);
+        if (!passwordValidation.valid) {
+            return res.status(400).send(passwordValidation.message);
         }
 
-        if (!emailValidation.format_valid || !emailValidation.smtp_check) {
-            return res.status(400).json({
-                error: 'Invalid email address. Please provide a valid and reachable email.'
-            });
-        }
-
-        // Check if the email or username already exists in the database
-        const collection = db.collection('users');
-        const existingUser = await collection.findOne({ $or: [{ user_id }, { username }, { email }] });
+        // Check for duplicate user_id or username
+        const existingUser = await collection.findOne({
+            $or: [{ user_id }, { username }]
+        });
 
         if (existingUser) {
-            if (existingUser.email === email) {
-                return res.status(409).json({ error: 'An account with this email already exists.' });
-            }
-            if (existingUser.user_id === user_id || existingUser.username === username) {
-                return res.status(409).json({ error: 'User with the same user_id or username already exists.' });
-            }
+            return res.status(409).send("User with the same user_id or username already exists");
         }
 
-        // Hash the password
+        // Hash the password for security (optional but recommended)
+        const bcrypt = require('bcryptjs');
         const hashedPassword = await bcrypt.hash(password, 10);
+        const isMatch = await bcrypt.compare(password, hashedPassword); //verify if the password is correct
 
-        // Create the user object
         const user = {
             user_id,
             username,
-            password: hashedPassword,
+            password: hashedPassword, // Store hashed password
             email,
-            role,
-            isVerified: true, // Skip verification and mark the user as verified
+            role, // Save the role in the user document
             registration_date: new Date().toISOString(),
             profile: {
                 level: 1,
                 experience: 0,
-                attributes: { strength: 0, dexterity: 0, intelligence: 0 },
+                attributes: {
+                    strength: 0,
+                    dexterity: 0,
+                    intelligence: 0
+                }
             },
-            inventory: [],
+            inventory: []
         };
 
         // Insert the user into the database
         await collection.insertOne(user);
-
-        res.status(201).json({ message: 'User created successfully.' });
+        res.status(201).send("User created successfully");
     } catch (error) {
-        console.error('Error in createUser route:', error);
-        res.status(500).json({ error: 'Error creating user' });
+        console.error("Error in createUser route:", error);
+        res.status(500).send("Error creating user");
     }
 });
-
-
 
 
 // Ensure server starts only after DB connection
