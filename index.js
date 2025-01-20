@@ -41,6 +41,18 @@ const client = new MongoClient(process.env.MONGODB_URI, {
     serverApi: ServerApiVersion.v1
 });
 
+// encryptField function
+const encryptField = (field) => {
+    const cipher = crypto.createCipheriv(
+        'aes-256-cbc',
+        crypto.scryptSync(process.env.ENCRYPTION_SECRET, 'salt', 32),
+        Buffer.alloc(16, 0) // Initialization vector
+    );
+    let encrypted = cipher.update(field, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    return encrypted;
+};
+
 // Establish and reuse MongoDB connection
 let db;
 async function connectToDatabase() {
@@ -236,26 +248,33 @@ app.post('/login', async (req, res) => {
             { $set: { failedAttempts: 0, lockUntil: null } }
         );
 
-        // Identify user role (admin or user)
-        const role = user.role || "user"; // Default to "user" if role is not set
+        // Generate opaque identifier
+        const opaqueId = crypto.randomBytes(16).toString('hex');
 
+        // Store opaqueId in the user session data (optional)
+        await collection.updateOne(
+            { username },
+            { $set: { opaqueId } }
+        );
 
         const JWT_SECRET = process.env.JWT_SECRET;
         if (!JWT_SECRET) {
             throw new Error("JWT_SECRET is not defined in environment variables.");
         }
 
-        // Generate token
+        // Include only role and opaqueId in the token
         const token = jwt.sign(
-            { user_id: user.user_id, username: user.username, role },
-            JWT_SECRET, // Use the environment variable
+            {
+                opaqueId,
+                role: user.role, // Include the role, ensuring admin retains their privileges
+            },
+            JWT_SECRET,
             { expiresIn: '1h' }
         );
 
         res.status(200).json({
             message: "Login successful",
             token,
-            role // Include role in the response
         });
     } catch (error) {
         console.error("Error in login route:", error);
