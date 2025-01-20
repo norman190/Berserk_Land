@@ -25,7 +25,6 @@ const {
 const {
     monsterslain,
     deleteUser,
-    reportUser
 } = require('./Functions/OtherFunction');
 
 const { viewLeaderboard, viewUserByAdmin } = require('./Functions/ViewFunction');
@@ -313,11 +312,12 @@ const verifyAdmin = (req, res, next) => {
             return res.status(403).json({ message: "Access denied: Admins only" });
         }
 
-        // If admin, allow the request to continue
-        req.user = decoded; // Optionally attach the decoded token to the request
-        next(); // Continue to the next middleware or route handler
+        // If admin, attach the decoded token to the request and continue to next middleware/handler
+        req.user = decoded;
+        next(); // Proceed to the next middleware or route handler
     } catch (error) {
-        return res.status(401).json({ message: "Invalid token" });
+        // Handle invalid or expired token
+        return res.status(401).json({ message: "Invalid or expired token" });
     }
 };
 
@@ -706,7 +706,9 @@ app.delete('/deleteUser/:user_id', verifyAdmin, async (req, res) => {
         const database = client.db('Cluster');
         const collection = database.collection('users');
 
+        // Check if the user exists in the database
         const user = await collection.findOne({ user_id });
+
         if (!user) {
             return res.status(404).send(`User with ID "${user_id}" not found.`);
         }
@@ -727,35 +729,6 @@ app.delete('/deleteUser/:user_id', verifyAdmin, async (req, res) => {
 
 
 
-// Report user route
-app.post('/reportUser', verifyUser, async (req, res) => {
-    try {
-        const { reporter_id, reported_user_id, reason } = req.body;
-
-        if (req.user.user_id !== reporter_id) {
-            return res.status(403).json({ message: "You can only report users as yourself." });
-        }
-
-        const database = client.db('Cluster');
-        const usersCollection = database.collection('users');
-
-        // Check if reported user exists
-        const reportedUser = await usersCollection.findOne({ user_id: reported_user_id });
-        if (!reportedUser) {
-            return res.status(404).send(`Reported user with ID ${reported_user_id} does not exist.`);
-        }
-
-        // Insert the report
-        const reportsCollection = database.collection('reports');
-        const report = { reporter_id, reported_user_id, reason, date: new Date() };
-        await reportsCollection.insertOne(report);
-
-        res.status(201).send("Report submitted successfully");
-    } catch (error) {
-        console.error("Error in reportUser route:", error);
-        res.status(500).send("Error submitting report");
-    }
-});
 
 // All Find Functions (Users only)
 app.get('/findUserByUsername/:username', verifyUser, async (req, res) => {

@@ -67,30 +67,8 @@ const deleteUser = async (client, user_id) => {
     }
 };
 
-const reportUser = async (client, user_id) => {
-    try {
-        const database = client.db('Cluster');
-        const collection = database.collection('users');
-
-        const user = await collection.findOne({ user_id });
-        if (!user) {
-            throw new Error('User not found');
-        }
-
-        return {
-            user_id: user.user_id,
-            username: user.username,
-            email: user.email,
-            profile: user.profile
-        }; // Returns summarized user report
-    } catch (error) {
-        console.error("Error reporting user:", error);
-        throw error;
-    }
-};
 
 module.exports = {
     monsterslain,
     deleteUser,
-    reportUser
 };
