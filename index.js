@@ -248,33 +248,37 @@ app.post('/login', async (req, res) => {
             { $set: { failedAttempts: 0, lockUntil: null } }
         );
 
-        // Generate opaque identifier
-        const opaqueId = crypto.randomBytes(16).toString('hex');
+        // Generate an opaque identifier for the user
+        const opaqueId = user.opaqueId || crypto.randomBytes(16).toString('hex');
 
-        // Store opaqueId in the user session data (optional)
-        await collection.updateOne(
-            { username },
-            { $set: { opaqueId } }
-        );
+        // If the user doesn't already have an opaqueId, save it to the database
+        if (!user.opaqueId) {
+            await collection.updateOne(
+                { username },
+                { $set: { opaqueId } }
+            );
+        }
 
         const JWT_SECRET = process.env.JWT_SECRET;
         if (!JWT_SECRET) {
             throw new Error("JWT_SECRET is not defined in environment variables.");
         }
 
-        // Include only role and opaqueId in the token
+        // Generate the token including opaqueId and role
         const token = jwt.sign(
             {
                 opaqueId,
-                role: user.role, // Include the role, ensuring admin retains their privileges
+                role: user.role, // Include user role
             },
             JWT_SECRET,
             { expiresIn: '1h' }
         );
 
+        // Return token and user details
         res.status(200).json({
             message: "Login successful",
             token,
+            role: user.role, // Include role for client-side use
         });
     } catch (error) {
         console.error("Error in login route:", error);
@@ -311,23 +315,20 @@ const verifyAdmin = (req, res, next) => {
 
 // Middleware to verify token and check if the role is 'user'
 const verifyUser = (req, res, next) => {
-    const token = req.headers['authorization']?.split(' ')[1]; // Extract token
+    const token = req.headers['authorization']?.split(' ')[1];
+
     if (!token) {
-        return res.status(401).json({ message: "No token provided" });
+        return res.status(401).json({ message: "Token is missing" });
     }
 
-    try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        if (decoded.role !== 'user') {
-            return res.status(403).json({ message: "Access denied: Users only" });
+    jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+        if (err) {
+            return res.status(403).json({ message: "Invalid or expired token" });
         }
 
-        req.user = decoded; // Attach user details to request
+        req.user = decoded; // Attach decoded token payload to the request
         next();
-    } catch (error) {
-        console.error("Error in verifyUser middleware:", error);
-        return res.status(401).json({ message: "Invalid token" });
-    }
+    });
 };
 
 
@@ -425,10 +426,12 @@ app.post('/createMonster', verifyAdmin, async (req, res) => {
 
 app.post('/createTransaction', verifyUser, async (req, res) => {
     try {
-        const { transaction_id, user_id, item_id, transaction_type, amount, date } = req.body;
+        const { transaction_id, item_id, transaction_type, amount, date } = req.body;
+        const user_id = req.user.opaqueId; // Extract user_id from the verified token
 
-        if (req.user.user_id !== user_id) {
-            return res.status(403).json({ message: "You can only create transactions for your own account." });
+        // Ensure required fields are provided
+        if (!transaction_id || !item_id || !transaction_type || !amount || !date) {
+            return res.status(400).json({ message: "Missing required fields" });
         }
 
         const database = client.db('Cluster');
@@ -437,25 +440,40 @@ app.post('/createTransaction', verifyUser, async (req, res) => {
         const transactionsCollection = database.collection('transactions');
 
         // Check if user exists
-        const userExists = await usersCollection.findOne({ user_id });
+        const userExists = await usersCollection.findOne({ opaqueId: user_id });
         if (!userExists) {
-            return res.status(404).send(`User with ID ${user_id} does not exist.`);
+            return res.status(404).json({ message: `User with ID ${user_id} does not exist.` });
         }
 
         // Check if item exists
         const itemExists = await itemsCollection.findOne({ item_id });
         if (!itemExists) {
-            return res.status(404).send(`Item with ID ${item_id} does not exist.`);
+            return res.status(404).json({ message: `Item with ID ${item_id} does not exist.` });
         }
 
+        // Check for duplicate transaction_id
+        const transactionExists = await transactionsCollection.findOne({ transaction_id });
+        if (transactionExists) {
+            return res.status(409).json({ message: "Transaction with this ID already exists." });
+        }
+
+        // Create the transaction document
+        const transaction = {
+            transaction_id,
+            user_id,
+            item_id,
+            transaction_type,
+            amount,
+            date: new Date(date).toISOString(), // Ensure proper date format
+        };
+
         // Insert the transaction
-        const transaction = { transaction_id, user_id, item_id, transaction_type, amount, date };
         await transactionsCollection.insertOne(transaction);
 
-        res.status(201).send("Transaction created successfully");
+        res.status(201).json({ message: "Transaction created successfully", transaction });
     } catch (error) {
         console.error("Error in createTransaction route:", error);
-        res.status(500).send("Error creating transaction");
+        res.status(500).json({ message: "Error creating transaction" });
     }
 });
 
