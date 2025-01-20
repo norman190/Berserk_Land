@@ -1,7 +1,11 @@
 const express = require('express');
 const { MongoClient, ServerApiVersion } = require('mongodb');
 const jwt = require('jsonwebtoken');
+const axios = require('axios');
 const dotenv = require('dotenv');
+const bcrypt = require('bcryptjs');
+const nodemailer = require('nodemailer');
+const crypto = require('crypto');
 dotenv.config();
 
 const {
@@ -82,25 +86,51 @@ app.post('/createUser', async (req, res) => {
             return res.status(400).send("Missing required fields: user_id, username, password, or email");
         }
 
+        // Validate email using Mailboxlayer API
+        const validateEmail = async (email) => {
+            try {
+                const response = await axios.get(
+                    `http://apilayer.net/api/check?access_key=${process.env.MAILBOXLAYER_API_KEY}&email=${encodeURIComponent(email)}`
+                );
+                return response.data;
+            } catch (error) {
+                console.error("Error validating email with Mailboxlayer:", error.message);
+                throw new Error("Failed to validate email address.");
+            }
+        };
+
+        let emailValidation;
+        try {
+            emailValidation = await validateEmail(email);
+        } catch (error) {
+            return res.status(500).send("Failed to validate email address.");
+        }
+
+        if (!emailValidation.format_valid || !emailValidation.smtp_check) {
+            return res.status(400).send("Invalid email address. Please provide a valid and reachable email.");
+        }
+
         // Validate password strength
         const passwordValidation = validatePassword(password);
         if (!passwordValidation.valid) {
             return res.status(400).send(passwordValidation.message);
         }
 
-        // Check for duplicate user_id or username
+        // Check for duplicate user_id, username, or email
         const existingUser = await collection.findOne({
-            $or: [{ user_id }, { username }]
+            $or: [{ user_id }, { username }, { email }]
         });
 
         if (existingUser) {
-            return res.status(409).send("User with the same user_id or username already exists");
+            if (existingUser.email === email) {
+                return res.status(409).send("An account with this email already exists.");
+            }
+            return res.status(409).send("User with the same user_id or username already exists.");
         }
 
-        // Hash the password for security (optional but recommended)
+        // Hash the password for security
         const bcrypt = require('bcryptjs');
         const hashedPassword = await bcrypt.hash(password, 10);
-        const isMatch = await bcrypt.compare(password, hashedPassword); //verify if the password is correct
 
         const user = {
             user_id,
