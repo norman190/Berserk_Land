@@ -90,13 +90,14 @@ const validatePassword = (password) => {
 app.post('/createUser', async (req, res) => {
     try {
         const { user_id, username, password, email, role = "user" } = req.body; // Default role is "user"
+
+        // Validate required fields
+        if (!user_id || !username || !password || !email) {
+            return res.status(400).json({ message: "Missing required fields: user_id, username, password, or email" });
+        }
+
         const database = client.db('Cluster');
         const collection = database.collection('users');
-
-        // Basic validation
-        if (!user_id || !username || !password || !email) {
-            return res.status(400).send("Missing required fields: user_id, username, password, or email");
-        }
 
         // Validate email using Mailboxlayer API
         const validateEmail = async (email) => {
@@ -115,17 +116,25 @@ app.post('/createUser', async (req, res) => {
         try {
             emailValidation = await validateEmail(email);
         } catch (error) {
-            return res.status(500).send("Failed to validate email address.");
+            return res.status(500).json({ message: "Failed to validate email address." });
         }
 
         if (!emailValidation.format_valid || !emailValidation.smtp_check) {
-            return res.status(400).send("Invalid email address. Please provide a valid and reachable email.");
+            return res.status(400).json({ message: "Invalid email address. Please provide a valid and reachable email." });
         }
 
         // Validate password strength
+        const validatePassword = (password) => {
+            const strongPasswordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
+            if (!strongPasswordRegex.test(password)) {
+                return { valid: false, message: "Password must be at least 8 characters long, include an uppercase letter, a lowercase letter, a number, and a special character." };
+            }
+            return { valid: true };
+        };
+
         const passwordValidation = validatePassword(password);
         if (!passwordValidation.valid) {
-            return res.status(400).send(passwordValidation.message);
+            return res.status(400).json({ message: passwordValidation.message });
         }
 
         // Check for duplicate user_id, username, or email
@@ -135,21 +144,22 @@ app.post('/createUser', async (req, res) => {
 
         if (existingUser) {
             if (existingUser.email === email) {
-                return res.status(409).send("An account with this email already exists.");
+                return res.status(409).json({ message: "An account with this email already exists." });
             }
-            return res.status(409).send("User with the same user_id or username already exists.");
+            return res.status(409).json({ message: "User with the same user_id or username already exists." });
         }
 
-        // Hash the password for security
+        // Hash the password
         const bcrypt = require('bcryptjs');
         const hashedPassword = await bcrypt.hash(password, 10);
 
+        // Create the user object
         const user = {
             user_id,
             username,
-            password: hashedPassword, // Store hashed password
+            password: hashedPassword,
             email,
-            role, // Save the role in the user document
+            role,
             registration_date: new Date().toISOString(),
             profile: {
                 level: 1,
@@ -165,10 +175,11 @@ app.post('/createUser', async (req, res) => {
 
         // Insert the user into the database
         await collection.insertOne(user);
-        res.status(201).send("User created successfully");
+
+        res.status(201).json({ message: "User created successfully" });
     } catch (error) {
         console.error("Error in createUser route:", error);
-        res.status(500).send("Error creating user");
+        res.status(500).json({ message: "Error creating user", error: error.message });
     }
 });
 
@@ -266,11 +277,8 @@ app.post('/login', async (req, res) => {
 
         // Generate the token including opaqueId and role
         const token = jwt.sign(
-            {
-                opaqueId,
-                role: user.role, // Include user role
-            },
-            JWT_SECRET,
+            { user_id: user.user_id, role: user.role },
+            process.env.JWT_SECRET,
             { expiresIn: '1h' }
         );
 
@@ -326,7 +334,7 @@ const verifyUser = (req, res, next) => {
             return res.status(403).json({ message: "Invalid or expired token" });
         }
 
-        req.user = decoded; // Attach decoded token payload to the request
+        req.user = decoded; // Attach the decoded payload (with opaqueId) to the request
         next();
     });
 };
@@ -362,10 +370,12 @@ const checkRole = (role) => {
 
 
 // Example protected route
-app.get('/protectedRoute', verifyToken, (req, res) => {
-    res.status(200).send(`Hello ${req.user.username}, this is a protected route.`);
+app.post('/protected-route', verifyUser, (req, res) => {
+    res.json({
+        message: "Access granted",
+        user: req.user, // Contains the decoded token payload
+    });
 });
-
 
 app.post('/createItem', verifyAdmin, async (req, res) => {
     try {
@@ -637,30 +647,51 @@ app.get('/findUserById/:user_id', async (req, res) => {
 // Monsterslain route
 app.post('/monsterslain', verifyUser, async (req, res) => {
     try {
-        const { user_id, monster_id } = req.body;
+        const { monster_id } = req.body;
+        const tokenUserId = req.user.user_id; // Get the user_id from the JWT token
+        const requestUserId = req.body.user_id; // Get the user_id from the request body
 
-        if (req.user.user_id !== user_id) {
+        console.log("Token User ID:", tokenUserId);  // Log to debug
+        console.log("Request User ID:", requestUserId);  // Log to debug
+
+        // Ensure the required field is provided
+        if (!monster_id) {
+            return res.status(400).json({ message: "Missing required field: monster_id" });
+        }
+
+        // Fetch the user from the database using the token's user_id
+        const user = await client.db('Cluster').collection('users').findOne({ user_id: tokenUserId });
+
+        if (!user) {
+            return res.status(404).json({ message: `User with ID "${tokenUserId}" not found.` });
+        }
+
+        // Log the fetched user
+        console.log("Fetched User from DB:", user);
+
+        // Ensure the user ID from the token matches the user ID in the request (or if it's an admin)
+        if (tokenUserId !== requestUserId && req.user.role !== 'admin') {
             return res.status(403).json({ message: "You can only update your own profile." });
         }
 
-        const user = await client.db('Cluster').collection('users').findOne({ user_id });
-
-        if (!user) {
-            return res.status(404).send(`User with ID "${user_id}" not found.`);
-        }
-
-        const updatedProfile = await monsterslain(client, user_id, monster_id);
+        // Call monsterslain function to process the slain monster
+        const updatedProfile = await monsterslain(client, requestUserId, monster_id);
 
         if (!updatedProfile) {
-            return res.status(500).send("Error updating profile after monster slain.");
+            return res.status(500).json({ message: "Error updating profile after monster slain." });
         }
 
-        res.status(200).json(updatedProfile);
+        res.status(200).json({
+            message: "Monster slain successfully",
+            updatedProfile,
+        });
     } catch (error) {
         console.error("Error in monsterslain route:", error);
-        res.status(500).send(`Error processing monster slain: ${error.message}`);
+        res.status(500).json({ message: `Error processing monster slain: ${error.message}` });
     }
 });
+
+
 
 // Delete user route
 app.delete('/deleteUser/:user_id', verifyAdmin, async (req, res) => {
